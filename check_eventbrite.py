@@ -1,7 +1,8 @@
 """
-Checks availability for the St Thomas' Saturday Antenatal Class on 18 July 2026
-using Eventbrite's public "checkoutfairy" sessions endpoint (found via DevTools -
-Network tab), and sends a WhatsApp message via CallMeBot if a slot opens up.
+Checks availability for the St Thomas' Saturday Antenatal Class across
+several specific dates, using Eventbrite's public "checkoutfairy" sessions
+endpoint (found via DevTools - Network tab). Sends a WhatsApp message via
+CallMeBot listing any date(s) that currently have an open slot.
 
 No Eventbrite API token needed - this endpoint is public and unauthenticated.
 
@@ -19,9 +20,19 @@ import os
 import sys
 import requests
 
-SESSIONS_URL = (
-    "https://checkoutfairy.ernt4vxu.ext.eventbrite.com/main/event/71647504615"
-    "/date/2026-07-18/sessions?tzIdentifier=Europe/London"
+EVENT_ID = "71647504615"
+
+# Add or remove dates here (format: YYYY-MM-DD).
+DATES_TO_CHECK = [
+    "2026-07-18",
+    "2026-08-15",
+    "2026-08-22",
+    "2026-09-05",
+]
+
+SESSIONS_URL_TEMPLATE = (
+    "https://checkoutfairy.ernt4vxu.ext.eventbrite.com/main/event/{event_id}"
+    "/date/{date}/sessions?tzIdentifier=Europe/London"
 )
 
 CALLMEBOT_PHONE = os.environ["CALLMEBOT_PHONE"]
@@ -30,7 +41,6 @@ EVENT_URL = os.environ.get(
     "EVENT_URL",
     "https://www.eventbrite.co.uk/e/st-thomas-saturdays-antenatal-classes-labour-breastfeeding-and-baby-tickets-71647504615",
 )
-
 
 REQUEST_HEADERS = {
     "User-Agent": (
@@ -43,14 +53,15 @@ REQUEST_HEADERS = {
 }
 
 
-def check_availability() -> bool:
-    """Returns True if the 18 July session currently has an open slot."""
-    resp = requests.get(SESSIONS_URL, headers=REQUEST_HEADERS, timeout=20)
+def check_date_availability(date: str) -> bool:
+    """Returns True if the session on this date currently has an open slot."""
+    url = SESSIONS_URL_TEMPLATE.format(event_id=EVENT_ID, date=date)
+    resp = requests.get(url, headers=REQUEST_HEADERS, timeout=20)
     resp.raise_for_status()
     sessions = resp.json()
 
     if not sessions:
-        print("No session data returned for this date.")
+        print(f"{date}: no session data returned.")
         return False
 
     session = sessions[0]
@@ -59,13 +70,11 @@ def check_availability() -> bool:
     is_published = session.get("isPublished", False)
 
     print(
-        f"soldOut={sold_out}, checkoutEnabled={checkout_enabled}, "
+        f"{date}: soldOut={sold_out}, checkoutEnabled={checkout_enabled}, "
         f"isPublished={is_published}"
     )
 
-    # Treat it as available if it's published, not sold out, and checkout is open.
     return is_published and not sold_out and checkout_enabled
-    #return True
 
 
 def send_whatsapp(message: str) -> None:
@@ -76,24 +85,27 @@ def send_whatsapp(message: str) -> None:
 
 
 def main():
-    try:
-        available = check_availability()
-    except requests.HTTPError as e:
-        print(f"Error calling sessions endpoint: {e}", file=sys.stderr)
-        sys.exit(1)
-    except (ValueError, KeyError, IndexError) as e:
-        print(f"Unexpected response shape: {e}", file=sys.stderr)
-        sys.exit(1)
+    available_dates = []
 
-    if available:
+    for date in DATES_TO_CHECK:
+        try:
+            if check_date_availability(date):
+                available_dates.append(date)
+        except requests.HTTPError as e:
+            print(f"{date}: error calling sessions endpoint: {e}", file=sys.stderr)
+        except (ValueError, KeyError, IndexError) as e:
+            print(f"{date}: unexpected response shape: {e}", file=sys.stderr)
+
+    if available_dates:
+        dates_list = ", ".join(available_dates)
         message = (
             "A slot has opened for the St Thomas' Saturday Antenatal Class "
-            f"on 18 July! Book now: {EVENT_URL}"
+            f"on: {dates_list}. Book now: {EVENT_URL}"
         )
         send_whatsapp(message)
-        print("Slot available - WhatsApp sent.")
+        print(f"Available dates found ({dates_list}) - WhatsApp sent.")
     else:
-        print("Still sold out / not open.")
+        print("No available dates right now.")
 
 
 if __name__ == "__main__":
