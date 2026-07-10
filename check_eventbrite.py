@@ -64,7 +64,8 @@ def check_availability() -> bool:
     )
 
     # Treat it as available if it's published, not sold out, and checkout is open.
-    return is_published and not sold_out and checkout_enabled
+    #return is_published and not sold_out and checkout_enabled
+    return true
 
 
 def send_whatsapp(message: str) -> None:
