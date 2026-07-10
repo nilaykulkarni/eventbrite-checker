@@ -1,0 +1,38 @@
+# Save this file as .github/workflows/check-eventbrite.yml in a (private is fine) GitHub repo.
+#
+# Setup:
+# 1. Create a new GitHub repo (can be private).
+# 2. Add check_eventbrite.py to the repo root.
+# 3. Add this file at .github/workflows/check-eventbrite.yml
+# 4. In the repo: Settings -> Secrets and variables -> Actions -> New repository secret.
+#    Add these two secrets:
+#      CALLMEBOT_PHONE
+#      CALLMEBOT_APIKEY
+# 5. Commit and push. It will start running automatically every 15 minutes.
+#    You can also trigger it manually from the Actions tab to test immediately.
+
+name: Check Eventbrite availability
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # every 15 minutes (GitHub may delay a few minutes under load)
+  workflow_dispatch: {}       # lets you click "Run workflow" manually to test
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run availability check
+        env:
+          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+        run: python check_eventbrite.py
