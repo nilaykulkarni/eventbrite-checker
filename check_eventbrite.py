@@ -1,9 +1,13 @@
 """
-Checks availability for St Thomas' antenatal classes (both the Saturday
-class and the Weekday class) across several specific dates each, using
-Eventbrite's public "checkoutfairy" sessions endpoint (found via DevTools -
-Network tab). Sends a WhatsApp message via CallMeBot listing any date(s)
-that currently have an open slot, per event.
+Checks availability for St Thomas' antenatal classes (Saturday class and
+Weekday class) by scanning several months ahead automatically, using
+Eventbrite's public "checkoutfairy" /dates endpoint (found via DevTools -
+Network tab). This returns every scheduled date in a given month along with
+its availability, so newly added dates are picked up automatically without
+needing to edit this script.
+
+Sends a WhatsApp message via CallMeBot listing any date(s) that currently
+have an open slot, grouped by event.
 
 No Eventbrite API token needed - this endpoint is public and unauthenticated.
 
@@ -16,16 +20,17 @@ locally before running):
 
 import os
 import sys
+from datetime import date
 import requests
 
-SESSIONS_URL_TEMPLATE = (
+DATES_URL_TEMPLATE = (
     "https://checkoutfairy.ernt4vxu.ext.eventbrite.com/main/event/{event_id}"
-    "/date/{date}/sessions?tzIdentifier=Europe/London"
+    "/dates?tzIdentifier=Europe/London&month={month}&year={year}"
 )
 
-# Each event has its own Eventbrite event ID, a human-readable name for the
-# WhatsApp message, its own booking URL, and the list of dates to check
-# (format: YYYY-MM-DD).
+# Only care about slots up to and including the first week of September 2026.
+CUTOFF_DATE = date(2026, 9, 10)
+
 EVENTS = [
     {
         "name": "Saturday class",
@@ -34,12 +39,6 @@ EVENTS = [
             "https://www.eventbrite.co.uk/e/st-thomas-saturdays-antenatal-"
             "classes-labour-breastfeeding-and-baby-tickets-71647504615"
         ),
-        "dates": [
-            "2026-07-18",
-            "2026-08-15",
-            "2026-08-22",
-            "2026-09-05",
-        ],
     },
     {
         "name": "Weekday class",
@@ -48,18 +47,6 @@ EVENTS = [
             "https://www.eventbrite.co.uk/e/st-thomas-weekdays-antenatal-"
             "classes-labour-breatsfeeding-and-baby-tickets-50729907519"
         ),
-        "dates": [
-            "2026-07-21",
-            "2026-07-23",
-            "2026-07-28",
-            "2026-08-04",
-            "2026-08-06",
-            "2026-08-11",
-            "2026-08-20",
-            "2026-08-25",
-            "2026-09-08",
-            "2026-09-10",
-        ],
     },
 ]
 
@@ -77,28 +64,27 @@ REQUEST_HEADERS = {
 }
 
 
-def check_date_availability(event_id: str, date: str) -> bool:
-    """Returns True if the session on this date currently has an open slot."""
-    url = SESSIONS_URL_TEMPLATE.format(event_id=event_id, date=date)
+def months_to_check():
+    """Returns (year, month) tuples from this month through CUTOFF_DATE's month."""
+    today = date.today()
+    y, m = today.year, today.month
+    months = []
+    while (y, m) <= (CUTOFF_DATE.year, CUTOFF_DATE.month):
+        months.append((y, m))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return months
+
+
+def get_month_dates(event_id: str, year: int, month: int):
+    """Returns the eventDates list for one event/month, or [] on any issue."""
+    url = DATES_URL_TEMPLATE.format(event_id=event_id, month=month, year=year)
     resp = requests.get(url, headers=REQUEST_HEADERS, timeout=20)
     resp.raise_for_status()
-    sessions = resp.json()
-
-    if not sessions:
-        print(f"  {date}: no session data returned.")
-        return False
-
-    session = sessions[0]
-    sold_out = session.get("soldOut", True)
-    checkout_enabled = session.get("checkoutEnabled", False)
-    is_published = session.get("isPublished", False)
-
-    print(
-        f"  {date}: soldOut={sold_out}, checkoutEnabled={checkout_enabled}, "
-        f"isPublished={is_published}"
-    )
-
-    return is_published and not sold_out and checkout_enabled
+    data = resp.json()
+    return data.get("eventDates", [])
 
 
 def send_whatsapp(message: str) -> None:
@@ -115,23 +101,39 @@ def main():
         print(f"Checking {event['name']} ({event['event_id']}):")
         available_dates = []
 
-        for date in event["dates"]:
+        for year, month in months_to_check():
             try:
-                if check_date_availability(event["event_id"], date):
-                    available_dates.append(date)
+                event_dates = get_month_dates(event["event_id"], year, month)
             except requests.HTTPError as e:
-                print(f"  {date}: error calling sessions endpoint: {e}", file=sys.stderr)
-            except (ValueError, KeyError, IndexError) as e:
-                print(f"  {date}: unexpected response shape: {e}", file=sys.stderr)
+                print(f"  {year}-{month:02d}: error calling dates endpoint: {e}", file=sys.stderr)
+                continue
+            except (ValueError, KeyError) as e:
+                print(f"  {year}-{month:02d}: unexpected response shape: {e}", file=sys.stderr)
+                continue
+
+            for entry in event_dates:
+                d = entry.get("date")
+                try:
+                    d_parsed = date.fromisoformat(d)
+                except (TypeError, ValueError):
+                    print(f"  Skipping unparseable date entry: {entry}", file=sys.stderr)
+                    continue
+
+                if d_parsed > CUTOFF_DATE:
+                    continue  # beyond the range we care about
+
+                sold_out = entry.get("soldOut", True)
+                checkout_enabled = entry.get("checkoutEnabled", False)
+                print(f"  {d}: soldOut={sold_out}, checkoutEnabled={checkout_enabled}")
+                if not sold_out and checkout_enabled:
+                    available_dates.append(d)
 
         if available_dates:
-            dates_list = ", ".join(available_dates)
-            message_lines.append(
-                f"{event['name']}: {dates_list} - {event['event_url']}"
-            )
+            dates_list = ", ".join(sorted(available_dates))
+            message_lines.append(f"{event['name']}: {dates_list} - {event['event_url']}")
             print(f"  -> Available: {dates_list}")
         else:
-            print("  -> No available dates right now.")
+            print("  -> No available dates in the scanned months.")
 
     if message_lines:
         message = "Antenatal class slot(s) available!\n" + "\n".join(message_lines)
